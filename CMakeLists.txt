@@ -11,7 +11,7 @@ find_package(rclpy REQUIRED)
 
 install(
   PROGRAMS
-    src/navigator.py
+    navigator/navigator.py
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()
