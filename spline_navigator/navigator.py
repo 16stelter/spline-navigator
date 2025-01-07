@@ -6,8 +6,9 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from spline_navigator.action import NavigatePath
 from scipy.interpolate import splprep, splev
-from coverage_path_planning.msg import PointArr
+from rclpy.action import ActionServer, CancelResponse
 import matplotlib.pyplot as plt
 
 class Navigator(Node):
@@ -28,20 +29,27 @@ class Navigator(Node):
         self.current_pose = None
         self.waypoint_idx = 0
 
+        self._action_server = ActionServer(
+            self,
+            NavigatePath,
+            f"{ns}/navigate_path",
+            self.execute_cb,
+            cancel_callback=self.cancel_callback,
+        )
+
         self.create_subscription(Odometry, f'{ns}/odom', self.odom_cb, 10)
-        self.create_subscription(PointArr, f'{ns}/path', self.path_cb, 10) 
         self.cmd_vel_pub = self.create_publisher(Twist, f'{ns}/cmd_vel', 10)
 
 
     def odom_cb(self, msg):
         self.current_pose = msg
 
-    def path_cb(self, msg):
+    def execute_cb(self, goal_handle):
         print("Received path")
-        print(msg.data)
+        print(goal_handle.request.path)
         x = np.array([self.current_pose.pose.pose.position.x])
         y = np.array([self.current_pose.pose.pose.position.y])
-        for p in msg.data:
+        for p in goal_handle.request.path:
             x = np.append(x, p.x)
             y = np.append(y, p.y)
         points = np.vstack((x, y))
@@ -63,17 +71,38 @@ class Navigator(Node):
         plt.show()
         self.waypoints = self.waypoints.T
         print(self.waypoints)
+
         self.waypoint_idx = 0
+        success = self.navigate()
+        if success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
+        result = NavigatePath.Result()
+        result.success = success
+        return result
    
+    def cancel_callback(self, cancel_request):
+        self.get_logger().info('Cancelling goal...')
+        twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.cmd_vel_pub.publish(twist)
+        self.get_logger().info('Sent stop command.')
+        return CancelResponse.ACCEPT
+
     def navigate(self):
         aligned = False
+        path_complete = False
         while rclpy.ok():
             rclpy.spin_once(self)
             if len(self.waypoints) > 1 and self.current_pose is not None:
                 if self.waypoint_idx == 0 and not aligned:
                     aligned = self.align()
                 elif self.waypoint_idx <= len(self.waypoints)-1 and aligned:
-                    self.step()
+                    path_complete = self.step()
+            if path_complete:
+                return True        
 
     def align(self):
         waypoint = self.waypoints[self.waypoint_idx]
@@ -109,13 +138,13 @@ class Navigator(Node):
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
             print("Reached goal")
-            return
+            return True
 
         # Current robot pose
         posex = self.current_pose.pose.pose.position.x
         posey = self.current_pose.pose.pose.position.y
 
-        lookahead_dist = 0.5
+        lookahead_dist = 0.2
         closest_idx, lookahead_point = self.find_lookahead_point((posex, posey), lookahead_dist)
         self.waypoint_idx = max(self.waypoint_idx, closest_idx)
 
@@ -137,7 +166,7 @@ class Navigator(Node):
 
         max_speed_factor = 1.0 - min(1.0, abs(angle_dist) / np.pi)  # Reduce speed for larger misalignment
         self.speed = min(self.max_speed * max_speed_factor, self.speed + self.accel)
-        if abs(angle_dist) > 0.5:
+        if abs(angle_dist) > 0.3:
             self.speed = max(self.min_speed, self.speed - self.deccel)  # Slow down sharply for large misalignment
 
         twist = Twist()
@@ -145,6 +174,7 @@ class Navigator(Node):
         twist.angular.z = angle_dist * 0.8  # Tunable proportional constant for smooth turning
 
         self.cmd_vel_pub.publish(twist)
+        return False
 
     def find_lookahead_point(self, current_pos, lookahead_dist):
         posex, posey = current_pos
