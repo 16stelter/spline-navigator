@@ -45,8 +45,8 @@ class Navigator(Node):
         self.current_pose = msg
 
     def execute_cb(self, goal_handle):
-        print("Received path")
-        print(goal_handle.request.path)
+        self.get_logger().info("Received path")
+        self.get_logger().info(f'{goal_handle.request.path}')
         x = np.array([self.current_pose.pose.pose.position.x])
         y = np.array([self.current_pose.pose.pose.position.y])
         for p in goal_handle.request.path:
@@ -65,10 +65,10 @@ class Navigator(Node):
         tck, _ = splprep(points, k=min(3, len(x)-1), s=0)
         t = np.linspace(0, 1, num_samples)
         self.waypoints = np.array(splev(t, tck))
-        plt.plot(x, y, 'o', label='Original Points')
-        plt.plot(self.waypoints[0], self.waypoints[1], '-')
-        plt.legend()
-        plt.show()
+        #plt.plot(x, y, 'o', label='Original Points')
+        #plt.plot(self.waypoints[0], self.waypoints[1], '-')
+        #plt.legend()
+        #plt.show()
         self.waypoints = self.waypoints.T
         print(self.waypoints)
 
@@ -101,6 +101,8 @@ class Navigator(Node):
                     aligned = self.align()
                 elif self.waypoint_idx <= len(self.waypoints)-1 and aligned:
                     path_complete = self.step()
+                else:
+                    path_complete = True
             if path_complete:
                 return True        
 
@@ -144,7 +146,7 @@ class Navigator(Node):
         posex = self.current_pose.pose.pose.position.x
         posey = self.current_pose.pose.pose.position.y
 
-        lookahead_dist = 0.2
+        lookahead_dist = 0.5
         closest_idx, lookahead_point = self.find_lookahead_point((posex, posey), lookahead_dist)
         self.waypoint_idx = max(self.waypoint_idx, closest_idx)
 
@@ -166,7 +168,7 @@ class Navigator(Node):
 
         max_speed_factor = 1.0 - min(1.0, abs(angle_dist) / np.pi)  # Reduce speed for larger misalignment
         self.speed = min(self.max_speed * max_speed_factor, self.speed + self.accel)
-        if abs(angle_dist) > 0.3:
+        if abs(angle_dist) > 0.5:
             self.speed = max(self.min_speed, self.speed - self.deccel)  # Slow down sharply for large misalignment
 
         twist = Twist()
@@ -189,7 +191,7 @@ class Navigator(Node):
             if dist < min_dist:
                 min_dist = dist
                 closest_idx = i
-            if dist > lookahead_dist and lookahead_point is None:
+            if (dist > lookahead_dist and lookahead_point is None) or i == len(self.waypoints) - 1:
                 lookahead_point = (wx, wy)
                 break
 
