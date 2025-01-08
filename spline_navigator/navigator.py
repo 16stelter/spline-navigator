@@ -47,55 +47,63 @@ class Navigator(Node):
     def execute_cb(self, goal_handle):
         self.get_logger().info("Received path")
         self.get_logger().info(f'{goal_handle.request.path}')
-        x = np.array([self.current_pose.pose.pose.position.x])
-        y = np.array([self.current_pose.pose.pose.position.y])
+        # assuming we already stand in the first node, otherwise add
+        # x = np.array([self.current_pose.pose.pose.position.x])
+        # y = np.array([self.current_pose.pose.pose.position.y])
+        x = np.array([])
+        y = np.array([])
         for p in goal_handle.request.path:
             x = np.append(x, p.x)
             y = np.append(y, p.y)
         points = np.vstack((x, y))
+        self.get_logger().info(f'Navigating region with {len(x)} waypoints.')
 
-        dx = np.diff(x)
-        dy = np.diff(y)
-        distances = np.sqrt(dx**2 + dy**2)
-        total_distance = np.sum(distances)
-        print("Total distance: " + str(total_distance))
-        num_samples = np.ceil(total_distance / 0.1).astype(int)
-        print(len(x))
+        if len(x) > 1:
+            dx = np.diff(x)
+            dy = np.diff(y)
+            distances = np.sqrt(dx**2 + dy**2)
+            total_distance = np.sum(distances)
+            self.get_logger().info("Total distance: " + str(total_distance))
+            self.get_logger().debug(f'{points}')
+            num_samples = np.ceil(total_distance / 0.1).astype(int)
 
-        tck, _ = splprep(points, k=min(3, len(x)-1), s=0)
-        t = np.linspace(0, 1, num_samples)
-        self.waypoints = np.array(splev(t, tck))
-        #plt.plot(x, y, 'o', label='Original Points')
-        #plt.plot(self.waypoints[0], self.waypoints[1], '-')
-        #plt.legend()
-        #plt.show()
-        self.waypoints = self.waypoints.T
-        print(self.waypoints)
+            tck, _ = splprep(points, k=min(3, len(x)-1), s=0)
+            t = np.linspace(0, 1, num_samples)
+            self.waypoints = np.array(splev(t, tck))
+            #plt.plot(x, y, 'o', label='Original Points')
+            #plt.plot(self.waypoints[0], self.waypoints[1], '-')
+            #plt.legend()
+            #plt.show()
+            self.waypoints = self.waypoints.T
 
-        self.waypoint_idx = 0
-        success = self.navigate()
+            self.waypoint_idx = 0
+            success = self.navigate()
+        else:
+            self.get_logger().info("Skipping region with less than 2 waypoints.")
+            success = True
         if success:
+            self.get_logger().info("Goal succeeded")
             goal_handle.succeed()
         else:
+            self.get_logger().info("Goal aborted")
             goal_handle.abort()
         result = NavigatePath.Result()
         result.success = success
         return result
    
     def cancel_callback(self, cancel_request):
-        self.get_logger().info('Cancelling goal...')
+        self.get_logger().warning('Cancelling goal...')
         twist = Twist()
         twist.linear.x = 0.0
         twist.angular.z = 0.0
         self.cmd_vel_pub.publish(twist)
-        self.get_logger().info('Sent stop command.')
+        self.get_logger().warning('Sent stop command.')
         return CancelResponse.ACCEPT
 
     def navigate(self):
         aligned = False
         path_complete = False
         while rclpy.ok():
-            rclpy.spin_once(self)
             if len(self.waypoints) > 1 and self.current_pose is not None:
                 if self.waypoint_idx == 0 and not aligned:
                     aligned = self.align()
@@ -132,14 +140,14 @@ class Navigator(Node):
         return False
 
     def step(self):
-        print("Progress: " + str(self.waypoint_idx + 1) + "/" + str(len(self.waypoints)))
+        self.get_logger().info("Progress: " + str(self.waypoint_idx + 1) + "/" + str(len(self.waypoints)))
         if self.waypoint_idx + 1 >= len(self.waypoints):
             # Stop when all waypoints are reached
             twist = Twist()
             twist.linear.x = 0.0
             twist.angular.z = 0.0
             self.cmd_vel_pub.publish(twist)
-            print("Reached goal")
+            self.get_logger().info("Reached goal")
             return True
 
         # Current robot pose
@@ -224,9 +232,15 @@ class Navigator(Node):
 def main(args=None):
     rclpy.init(args=args)
     nav = Navigator()
-    nav.navigate()
-    nav.destroy_node()
-    rclpy.shutdown()
+
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(nav)
+
+    try:
+        executor.spin()
+    finally:
+        nav.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
