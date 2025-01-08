@@ -105,7 +105,7 @@ class Navigator(Node):
         path_complete = False
         while rclpy.ok():
             if len(self.waypoints) > 1 and self.current_pose is not None:
-                if self.waypoint_idx == 1 and not aligned:
+                if self.waypoint_idx == 0 and not aligned:
                     aligned = self.align()
                 elif self.waypoint_idx <= len(self.waypoints)-1 and aligned:
                     path_complete = self.step()
@@ -115,7 +115,7 @@ class Navigator(Node):
                 return True        
 
     def align(self):
-        waypoint = self.waypoints[self.waypoint_idx]
+        waypoint = self.waypoints[self.waypoint_idx+1]
         posex = self.current_pose.pose.pose.position.x
         posey = self.current_pose.pose.pose.position.y
         
