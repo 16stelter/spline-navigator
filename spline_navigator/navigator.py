@@ -28,6 +28,7 @@ class Navigator(Node):
         self.waypoints = []
         self.current_pose = None
         self.waypoint_idx = 0
+        self.last_waypoint_idx = -1
 
         self._action_server = ActionServer(
             self,
@@ -64,17 +65,8 @@ class Navigator(Node):
             distances = np.sqrt(dx**2 + dy**2)
             total_distance = np.sum(distances)
             self.get_logger().info("Total distance: " + str(total_distance))
-            self.get_logger().debug(f'{points}')
-            num_samples = np.ceil(total_distance / 0.1).astype(int)
-
-            tck, _ = splprep(points, k=min(3, len(x)-1), s=0)
-            t = np.linspace(0, 1, num_samples)
-            self.waypoints = np.array(splev(t, tck))
-            #plt.plot(x, y, 'o', label='Original Points')
-            #plt.plot(self.waypoints[0], self.waypoints[1], '-')
-            #plt.legend()
-            #plt.show()
-            self.waypoints = self.waypoints.T
+            
+            self.waypoints = points.T
 
             self.waypoint_idx = 0
             success = self.navigate()
@@ -101,47 +93,21 @@ class Navigator(Node):
         return CancelResponse.ACCEPT
 
     def navigate(self):
-        aligned = False
         path_complete = False
         while rclpy.ok():
             if len(self.waypoints) > 1 and self.current_pose is not None:
-                if self.waypoint_idx == 0 and not aligned:
-                    aligned = self.align()
-                elif self.waypoint_idx <= len(self.waypoints)-1 and aligned:
+                if self.waypoint_idx <= len(self.waypoints):
                     path_complete = self.step()
                 else:
                     path_complete = True
             if path_complete:
                 return True        
 
-    def align(self):
-        waypoint = self.waypoints[self.waypoint_idx+1]
-        posex = self.current_pose.pose.pose.position.x
-        posey = self.current_pose.pose.pose.position.y
-        
-        target_angle = np.arctan2(waypoint[1]-posey, waypoint[0]-posex)
-        _, _, current_angle = self.euler_from_quaternion(self.current_pose.pose.pose.orientation.x, 
-                                                         self.current_pose.pose.pose.orientation.y,
-                                                         self.current_pose.pose.pose.orientation.z,
-                                                         self.current_pose.pose.pose.orientation.w)
-        angle_dist = target_angle - current_angle
-        while angle_dist > np.pi:
-            angle_dist -= 2 * np.pi
-        while angle_dist < -np.pi:
-            angle_dist += 2 * np.pi
-
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = min(self.max_rotation, abs(angle_dist)) * np.sign(angle_dist)
-        self.cmd_vel_pub.publish(twist)
-
-        if abs(angle_dist) < 0.1:
-            return True
-        return False
-
     def step(self):
-        self.get_logger().info("Progress: " + str(self.waypoint_idx + 1) + "/" + str(len(self.waypoints)))
-        if self.waypoint_idx + 1 >= len(self.waypoints):
+        if self.last_waypoint_idx != self.waypoint_idx:
+            self.get_logger().info("Progress: " + str(self.waypoint_idx + 1) + "/" + str(len(self.waypoints)))
+            self.last_waypoint_idx = self.waypoint_idx
+        if self.waypoint_idx >= len(self.waypoints):
             # Stop when all waypoints are reached
             twist = Twist()
             twist.linear.x = 0.0
@@ -151,16 +117,17 @@ class Navigator(Node):
             return True
 
         # Current robot pose
-        posex = self.current_pose.pose.pose.position.x
-        posey = self.current_pose.pose.pose.position.y
+        pose_x = self.current_pose.pose.pose.position.x
+        pose_y = self.current_pose.pose.pose.position.y
+        target_x = self.waypoints[self.waypoint_idx][0]
+        target_y = self.waypoints[self.waypoint_idx][1]
+       
+        dist_to_target = np.sqrt((target_x - pose_x)**2 + (target_y - pose_y)**2)
+        target_angle = np.arctan2(target_y - pose_y, target_x - pose_x)
 
-        lookahead_dist = 0.5
-        closest_idx, lookahead_point = self.find_lookahead_point((posex, posey), lookahead_dist)
-        self.waypoint_idx = max(self.waypoint_idx, closest_idx)
-
-        target_x, target_y = lookahead_point
-        dist_to_target = np.sqrt((target_x - posex)**2 + (target_y - posey)**2)
-        target_angle = np.arctan2(target_y - posey, target_x - posex)
+        if dist_to_target < 0.1:
+            self.waypoint_idx += 1
+            return False
 
         _, _, current_angle = self.euler_from_quaternion(
             self.current_pose.pose.pose.orientation.x,
@@ -168,49 +135,21 @@ class Navigator(Node):
             self.current_pose.pose.pose.orientation.z,
             self.current_pose.pose.pose.orientation.w
         )
-        angle_dist = target_angle - current_angle
-        while angle_dist > np.pi:
-            angle_dist -= 2 * np.pi
-        while angle_dist < -np.pi:
-            angle_dist += 2 * np.pi
 
-        max_speed_factor = 1.0 - min(1.0, abs(angle_dist) / np.pi)  # Reduce speed for larger misalignment
-        self.speed = min(self.max_speed * max_speed_factor, self.speed + self.accel)
-        if abs(angle_dist) > 0.5:
-            self.speed = max(self.min_speed, self.speed - self.deccel)  # Slow down sharply for large misalignment
-
+        beta = target_angle - current_angle
+        if beta > np.pi:
+            beta -= 2*np.pi
+        if beta < -np.pi:
+            beta += 2*np.pi
+        
         twist = Twist()
-        twist.linear.x = self.speed
-        twist.angular.z = angle_dist * 0.8  # Tunable proportional constant for smooth turning
-
+        if abs(beta) > 0.1:
+            twist.linear.x = 0.0
+        else:
+            twist.linear.x = self.max_speed
+        twist.angular.z = beta * 2
         self.cmd_vel_pub.publish(twist)
         return False
-
-    def find_lookahead_point(self, current_pos, lookahead_dist):
-        posex, posey = current_pos
-        closest_idx = self.waypoint_idx
-        min_dist = float('inf')
-        lookahead_point = None
-
-        # Find the closest waypoint and lookahead point
-        for i in range(self.waypoint_idx, len(self.waypoints)):
-            wx, wy = self.waypoints[i]
-            dist = np.sqrt((wx - posex)**2 + (wy - posey)**2)
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = i
-            if (dist > lookahead_dist and lookahead_point is None) or i == len(self.waypoints) - 1:
-                lookahead_point = (wx, wy)
-                break
-
-        # Default to the last waypoint if no lookahead point is found
-        if lookahead_point is None:
-            lookahead_point = self.waypoints[-1]
-            closest_idx = len(self.waypoints) - 1
-
-        return closest_idx, lookahead_point
-
-
 
     def euler_from_quaternion(self, x, y ,z ,w):
         t0 = 2.0 * (w * x + y * z)
