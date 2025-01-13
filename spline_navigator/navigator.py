@@ -9,14 +9,15 @@ from nav_msgs.msg import Odometry
 from spline_navigator.action import NavigatePath
 from scipy.interpolate import splprep, splev
 from rclpy.action import ActionServer, CancelResponse
+from tf2_msgs.msg import TFMessage
 import matplotlib.pyplot as plt
 
 class Navigator(Node):
     def __init__(self):
         super().__init__("navigator")
-        ns = self.get_namespace()
-        if ns == "/":
-            ns = ""
+        self.ns = self.get_namespace()
+        if self.ns == "/":
+            self.ns = ""
 
         self.max_speed = 2.0
         self.min_speed = 0.0
@@ -33,24 +34,27 @@ class Navigator(Node):
         self._action_server = ActionServer(
             self,
             NavigatePath,
-            f"{ns}/navigate_path",
+            f"{self.ns}/navigate_path",
             self.execute_cb,
             cancel_callback=self.cancel_callback,
         )
 
-        self.create_subscription(Odometry, f'{ns}/odom', self.odom_cb, 10)
-        self.cmd_vel_pub = self.create_publisher(Twist, f'{ns}/cmd_vel', 10)
+        self.create_subscription(TFMessage, '/tf', self.tf_cb, 10)
+        self.cmd_vel_pub = self.create_publisher(Twist, f'{self.ns}/cmd_vel', 10)
 
 
-    def odom_cb(self, msg):
-        self.current_pose = msg
+    def tf_cb(self, msg):
+        for tf in msg.transforms:
+            if tf.child_frame_id == f'{self.ns}base_footprint':
+                self.current_pose = tf.transform
+                break
 
     def execute_cb(self, goal_handle):
         self.get_logger().info("Received path")
         self.get_logger().info(f'{goal_handle.request.path}')
         # assuming we already stand in the first node, otherwise add
-        # x = np.array([self.current_pose.pose.pose.position.x])
-        # y = np.array([self.current_pose.pose.pose.position.y])
+        # x = np.array([self.current_pose.translation.x])
+        # y = np.array([self.current_pose.translation.y])
         x = np.array([])
         y = np.array([])
         for p in goal_handle.request.path:
@@ -117,8 +121,8 @@ class Navigator(Node):
             return True
 
         # Current robot pose
-        pose_x = self.current_pose.pose.pose.position.x
-        pose_y = self.current_pose.pose.pose.position.y
+        pose_x = self.current_pose.translation.x
+        pose_y = self.current_pose.translation.y
         target_x = self.waypoints[self.waypoint_idx][0]
         target_y = self.waypoints[self.waypoint_idx][1]
        
@@ -130,10 +134,10 @@ class Navigator(Node):
             return False
 
         _, _, current_angle = self.euler_from_quaternion(
-            self.current_pose.pose.pose.orientation.x,
-            self.current_pose.pose.pose.orientation.y,
-            self.current_pose.pose.pose.orientation.z,
-            self.current_pose.pose.pose.orientation.w
+            self.current_pose.rotation.x,
+            self.current_pose.rotation.y,
+            self.current_pose.rotation.z,
+            self.current_pose.rotation.w
         )
 
         beta = target_angle - current_angle
